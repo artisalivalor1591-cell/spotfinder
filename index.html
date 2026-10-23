@@ -11,7 +11,7 @@ input,select,textarea{width:100%;font-size:20px;padding:12px;margin:4px 0 10px;b
 .muted{color:#aaa;font-size:16px}#arrow{width:220px;height:220px;margin:10px auto;display:block;transition:transform .2s}
 img.ph{width:100%;border-radius:8px}.hide{display:none}h1{margin:10px 0}.row{display:flex;gap:8px}.row>*{flex:1}
 </style></head><body>
-<div id="app"></div>
+<div id="app"><p style="text-align:center;margin-top:40vh">Loading…</p></div>
 <script>
 const $=s=>document.querySelector(s),app=$('#app');
 const KEY='spotfinder.spots';let spots=JSON.parse(localStorage.getItem(KEY)||'[]');
@@ -35,7 +35,7 @@ function list(){guide.spot=null;relWake();onOri=null;let q='';
  app.innerHTML=`<h1>SpotFinder</h1><div id="gps" class="muted">Getting GPS…</div>
  <button onclick="markNew()">＋ Mark spot</button><input id="q" placeholder="Search name, MP, track, note…"><div id="L"></div>
  <div class="row"><button class="sec" onclick="exportJSON()">Backup JSON</button><button class="sec" onclick="exportCSV()">CSV</button></div>
- <button class="sec" onclick="$('#imp').click()">Import backup</button><input id="imp" type="file" accept=".json,application/json" class="hide">`;
+ <button class="sec" onclick="$('#imp').click()">Import backup</button><button class="sec" onclick="lockApp()">🔒 Lock app</button><input id="imp" type="file" accept=".json,application/json" class="hide">`;
  $('#imp').onchange=importJSON;
  const draw=()=>{const g=$('#gps');if(g&&here)g.textContent=`GPS ±${Math.round(ft(here.acc))} ft · ${spots.length} spots`;
   let arr=spots.filter(s=>!q||[s.name,s.cat,s.mp,s.track,s.note,s.offsets].join(' ').toLowerCase().includes(q));
@@ -118,5 +118,17 @@ function exportCSV(){const h=['name','cat','mp','track','lat','lon','acc_ft','ti
  dl('spotfinder.csv',[h.join(','),...spots.map(s=>[s.name,s.cat,s.mp,s.track,s.lat,s.lon,Math.round(ft(s.acc)),s.time,s.offsets,s.note].map(q).join(','))].join('\n'),'text/csv')}
 function importJSON(e){const f=e.target.files[0];if(!f)return;f.text().then(t=>{const a=JSON.parse(t);if(!Array.isArray(a))throw 0;let n=0;a.forEach(s=>{if(s.id&&s.lat!=null){const i=spots.findIndex(x=>x.id===s.id);i<0?spots.push(s):spots[i]=s;n++}});save();alert('Imported '+n);list()}).catch(()=>alert('Not a valid backup'))}
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
-list();
+const PH='44db4e7dd7d675378fce1f9272c0fe44d428b75eb16101d53b88155a39d4aaf8';
+function lockApp(){localStorage.removeItem('sf.unlocked');relWake&&relWake();guide.spot=null;gate()}
+function gate(){if(localStorage.getItem('sf.unlocked')===PH)return list();onPos=null;onOri=null;let v='';
+ app.innerHTML=`<h1 style="text-align:center">SpotFinder</h1><p style="text-align:center">Enter crew passcode</p>
+ <div class="big" id="pc" style="letter-spacing:12px;min-height:70px">&nbsp;</div><div id="pe" style="color:#f66;text-align:center;min-height:28px"></div>
+ <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">${[1,2,3,4,5,6,7,8,9,'⌫',0,'OK'].map(k=>`<button class="${k==='OK'?'':'sec'}" style="min-height:80px;font-size:32px;margin:0" data-k="${k}">${k}</button>`).join('')}</div>
+ <input id="pin" type="password" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="or type here" style="margin-top:12px;text-align:center;font-size:28px">`;
+ const show=()=>$('#pc').innerHTML=v?'•'.repeat(v.length):'&nbsp;';
+ const check=async x=>{const d=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(x));const hx=[...new Uint8Array(d)].map(b=>b.toString(16).padStart(2,'0')).join('');
+  if(hx===PH){localStorage.setItem('sf.unlocked',PH);list()}else{v='';show();$('#pin').value='';$('#pe').textContent='Wrong passcode'}};
+ app.querySelectorAll('[data-k]').forEach(b=>b.onclick=()=>{const k=b.dataset.k;$('#pe').textContent='';if(k==='⌫')v=v.slice(0,-1);else if(k==='OK')return check(v);else if(v.length<8)v+=k;show();if(v.length===4)check(v)});
+ $('#pin').oninput=e=>{v=e.target.value.replace(/\D/g,'').slice(0,8);show();if(v.length===4)check(v)};$('#pin').onkeydown=e=>{if(e.key==='Enter')check(v)}}
+gate();
 </script></body></html>
