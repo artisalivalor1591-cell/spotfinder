@@ -1,7 +1,7 @@
 <!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black">
-<link rel="manifest" href="manifest.json"><link rel="apple-touch-icon" href="icon.svg"><title>SpotFinder</title>
+<link rel="manifest" href="manifest.json"><link rel="apple-touch-icon" href="icon-192.png"><title>SpotFinder</title>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#000;color:#fff;font:20px -apple-system,sans-serif;padding:env(safe-area-inset-top) 12px 40px}
 button,.btn{display:block;width:100%;min-height:64px;margin:8px 0;font-size:22px;font-weight:700;border:0;border-radius:12px;background:#ffcc00;color:#000}
@@ -25,11 +25,13 @@ const ft=m=>m*3.28084,fmt=m=>{const f=ft(m);return f<1000?Math.round(f)+' ft':(f
 const card=b=>['N','NE','E','SE','S','SW','W','NW'][Math.round(b/45)%8];
 function startWatch(){if(watchId!=null||!navigator.geolocation)return;watchId=navigator.geolocation.watchPosition(p=>{here={lat:p.coords.latitude,lon:p.coords.longitude,acc:p.coords.accuracy};onPos&&onPos(here)},e=>{const s=$('#gps');if(s)s.textContent='GPS error: '+e.message},{enableHighAccuracy:true,maximumAge:0,timeout:30000})}
 let onPos=null;
-function compass(){const go=()=>addEventListener('deviceorientation',e=>{if(e.webkitCompassHeading!=null)heading=e.webkitCompassHeading;else if(e.absolute&&e.alpha!=null)heading=360-e.alpha;onOri&&onOri()},true);
+function compass(){const go=()=>{const scr=()=>(screen.orientation&&screen.orientation.angle)||window.orientation||0;
+ if('ondeviceorientationabsolute' in window)addEventListener('deviceorientationabsolute',e=>{if(e.alpha!=null){heading=(360-e.alpha+scr())%360;onOri&&onOri()}},true);
+ addEventListener('deviceorientation',e=>{if(e.webkitCompassHeading!=null)heading=e.webkitCompassHeading;else if(!('ondeviceorientationabsolute' in window)&&e.absolute&&e.alpha!=null)heading=(360-e.alpha+scr())%360;else return;onOri&&onOri()},true)};
  if(typeof DeviceOrientationEvent!=='undefined'&&DeviceOrientationEvent.requestPermission){DeviceOrientationEvent.requestPermission().then(r=>{if(r==='granted'){go();localStorage.setItem('cmp','1');const b=$('#cmpBtn');b&&b.classList.add('hide')}else alert('Compass permission denied')}).catch(e=>alert(e))}else go()}
 let onOri=null,compassOn=false;function ensureCompass(){if(compassOn)return;if(!(typeof DeviceOrientationEvent!=='undefined'&&DeviceOrientationEvent.requestPermission)){compass();compassOn=true}}
 // ---------- LIST ----------
-function list(){onOri=null;let q='';
+function list(){guide.spot=null;relWake();onOri=null;let q='';
  app.innerHTML=`<h1>SpotFinder</h1><div id="gps" class="muted">Getting GPS…</div>
  <button onclick="markNew()">＋ Mark spot</button><input id="q" placeholder="Search name, MP, track, note…"><div id="L"></div>
  <div class="row"><button class="sec" onclick="exportJSON()">Backup JSON</button><button class="sec" onclick="exportCSV()">CSV</button></div>
@@ -51,7 +53,7 @@ function capture(cb){const pts=[];const T=15000,t0=Date.now();
  const prev=onPos;onPos=p=>{pts.push({...p});$('#capAcc').textContent='±'+Math.round(ft(p.acc))+' ft';$('#capTxt').textContent=`${pts.length} readings · ${Math.max(0,Math.ceil((T-(Date.now()-t0))/1000))}s left`};
  $('#capDone').onclick=fin;const iv=setInterval(()=>{if(Date.now()-t0>=T)fin()},500);startWatch()}
 function markNew(){edit({id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),name:'',cat:'Island wire',note:'',offsets:'',mp:'',track:'',photo:null,lat:null},true)}
-function edit(s,isNew){onOri=null;const c=['Island wire','Termination','Bond','Other'];
+function edit(s,isNew){guide.spot=null;relWake();onOri=null;const c=['Island wire','Termination','Bond','Other'];
  app.innerHTML=`<h1>${isNew?'New spot':'Edit spot'}</h1>
  <label>Name</label><input id="n" value="${esc(s.name)}" placeholder="e.g. Island wire MP 42.3 E rail">
  <label>Category</label><select id="c">${c.map(x=>`<option ${x===s.cat?'selected':''}>${x}</option>`).join('')}</select>
@@ -68,8 +70,29 @@ function edit(s,isNew){onOri=null;const c=['Island wire','Termination','Bond','O
   if(s.lat==null){alert('Capture GPS first');return}const i=spots.findIndex(x=>x.id===s.id);i<0?spots.push(s):spots[i]=s;save();find(s.id)};
  if(!isNew)$('#dl').onclick=()=>{if(confirm('Delete '+s.name+'?')){spots=spots.filter(x=>x.id!==s.id);save();list()}};
  if(isNew)$('#gp').click()}
+// ---------- AUDIO GUIDANCE ----------
+const guide={sound:false,voice:false,spot:null,d:null,b:null,lastSay:0,lastD:null,lastRel:'',atSpot:false};let actx=null,wl=null;
+function unlockAudio(){try{actx=actx||new (window.AudioContext||window.webkitAudioContext)();actx.resume();const o=actx.createOscillator(),g=actx.createGain();g.gain.value=0;o.connect(g).connect(actx.destination);o.start();o.stop(actx.currentTime+0.01)}catch(e){}
+ try{speechSynthesis.speak(new SpeechSynthesisUtterance(''))}catch(e){}}
+function tone(f,dur){if(!actx)return;const o=actx.createOscillator(),g=actx.createGain(),t=actx.currentTime;o.frequency.value=f;g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(0.5,t+0.01);g.gain.exponentialRampToValueAtTime(0.0001,t+dur);o.connect(g).connect(actx.destination);o.start(t);o.stop(t+dur+0.02)}
+const vib=ms=>{try{navigator.vibrate&&navigator.vibrate(ms)}catch(e){}};
+const near=()=>guide.d!=null&&(guide.d<=1.5||(here&&guide.d<=here.acc));
+function beepLoop(){let t=null;const step=()=>{if(!guide.spot)return;let wait=1000;
+ if(guide.sound&&guide.d!=null){if(near()){tone(1200,0.9);vib(600);wait=900}else{const f=ft(guide.d),k=Math.min(1,Math.log10(Math.max(f,5))/3);wait=150+k*1650;tone(1100-k*600,0.08);vib(60)}}
+ t=setTimeout(step,wait)};step()}
+function rel(b){if(heading==null)return 'heading '+({N:'north',NE:'northeast',E:'east',SE:'southeast',S:'south',SW:'southwest',W:'west',NW:'northwest'})[card(b)];
+ const r=((b-heading)%360+360)%360;return ['straight ahead','ahead right','to your right','behind right','behind you','behind left','to your left','ahead left'][Math.round(r/45)%8]}
+function say(t){try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.rate=1;speechSynthesis.speak(u)}catch(e){}}
+function speak(){if(!guide.voice||guide.d==null)return;const now=Date.now(),s=guide.spot;
+ if(near()){if(!guide.atSpot){guide.atSpot=true;say("You're at the spot, check offsets. "+(s.offsets||'No offsets recorded.'));guide.lastSay=now}return}
+ if(guide.atSpot&&guide.d>(here?here.acc:5)*1.5)guide.atSpot=false;
+ const f=Math.round(ft(guide.d)),r=rel(guide.b),chg=guide.lastD==null||Math.abs(f-guide.lastD)>Math.max(10,guide.lastD*0.25)||r!==guide.lastRel;
+ if(now-guide.lastSay>(chg?3000:5000)){guide.lastSay=now;guide.lastD=f;guide.lastRel=r;say((f<1000?f+' feet':(f/5280).toFixed(1)+' miles')+', '+r)}}
+async function wake(){try{if('wakeLock' in navigator&&!wl){wl=await navigator.wakeLock.request('screen');wl.addEventListener('release',()=>wl=null)}}catch(e){}}
+function relWake(){try{wl&&wl.release()}catch(e){}wl=null;try{speechSynthesis.cancel()}catch(e){}}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&guide.spot)wake()});
 // ---------- FIND ----------
-function find(id){const s=spots.find(x=>x.id===id);if(!s)return list();ensureCompass();
+function find(id){guide.spot=null;const s=spots.find(x=>x.id===id);if(!s)return list();ensureCompass();
  const needBtn=typeof DeviceOrientationEvent!=='undefined'&&DeviceOrientationEvent.requestPermission&&heading==null;
  app.innerHTML=`<button class="sec" onclick="list()">‹ All spots</button><h1>${esc(s.name)}</h1>
  <div class="big" id="d">…</div><div style="text-align:center" id="b" class="muted"></div>
@@ -80,10 +103,14 @@ function find(id){const s=spots.find(x=>x.id===id);if(!s)return list();ensureCom
  <div class="card">${s.cat}${s.mp?' · MP '+esc(s.mp):''}${s.track?' · Track '+esc(s.track):''}<br>${esc(s.note)}<div class="muted">Saved ±${Math.round(ft(s.acc))} ft · ${s.time?new Date(s.time).toLocaleString():''}<br>${s.lat.toFixed(6)}, ${s.lon.toFixed(6)}</div></div>
  <a class="btn" style="text-align:center;line-height:64px;text-decoration:none" href="https://maps.apple.com/?daddr=${s.lat},${s.lon}&q=${encodeURIComponent(s.name)}">Open in Apple Maps</a>
  <button class="sec" id="ed">Edit / re-mark</button>`;
+ app.querySelector('h1').insertAdjacentHTML('afterend',`<div class="row"><button class="sec" id="snd">🔇 Sound off</button><button class="sec" id="vc">🗣 Voice off</button></div><div class="muted" id="hint">Tip: iPhone silent switch off and turn volume up, or beeps may be muted.</div>`);
+ $('#snd').onclick=()=>{guide.sound=!guide.sound;unlockAudio();$('#snd').textContent=guide.sound?'🔊 Sound on':'🔇 Sound off';$('#snd').className=guide.sound?'':'sec'};
+ $('#vc').onclick=()=>{guide.voice=!guide.voice;unlockAudio();if(guide.voice){guide.lastSay=0;say('Voice guidance on')}else speechSynthesis.cancel();$('#vc').textContent=guide.voice?'🗣 Voice on':'🗣 Voice off';$('#vc').className=guide.voice?'':'sec'};
+ guide.spot=s;guide.atSpot=false;wake();beepLoop();
  $('#ed').onclick=()=>edit({...s},false);
  const upd=()=>{if(!here)return;const d=dist(here,s),b=bearing(here,s);$('#d').textContent=fmt(d);
   $('#b').textContent=`Bearing ${Math.round(b)}° ${card(b)} · your GPS ±${Math.round(ft(here.acc))} ft`+(d<here.acc?' · within GPS error: use offsets':'');
-  $('#arrow').style.transform=`rotate(${heading!=null?b-heading:b}deg)`};onPos=upd;onOri=upd;startWatch();upd()}
+  $('#arrow').style.transform=`rotate(${heading!=null?b-heading:b}deg)`;guide.d=d;guide.b=b;speak()};onPos=upd;onOri=upd;startWatch();upd()}
 // ---------- BACKUP ----------
 function dl(name,data,type){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([data],{type}));a.download=name;a.click()}
 function exportJSON(){dl('spotfinder-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(spots),'application/json')}
