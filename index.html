@@ -1,0 +1,95 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black">
+<link rel="manifest" href="manifest.json"><link rel="apple-touch-icon" href="icon.svg"><title>SpotFinder</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#000;color:#fff;font:20px -apple-system,sans-serif;padding:env(safe-area-inset-top) 12px 40px}
+button,.btn{display:block;width:100%;min-height:64px;margin:8px 0;font-size:22px;font-weight:700;border:0;border-radius:12px;background:#ffcc00;color:#000}
+button.sec{background:#333;color:#fff}button.del{background:#c00;color:#fff}
+input,select,textarea{width:100%;font-size:20px;padding:12px;margin:4px 0 10px;border-radius:8px;border:2px solid #666;background:#111;color:#fff}
+.card{background:#1a1a1a;border:2px solid #444;border-radius:12px;padding:12px;margin:8px 0}.big{font-size:56px;font-weight:800;text-align:center}
+.muted{color:#aaa;font-size:16px}#arrow{width:220px;height:220px;margin:10px auto;display:block;transition:transform .2s}
+img.ph{width:100%;border-radius:8px}.hide{display:none}h1{margin:10px 0}.row{display:flex;gap:8px}.row>*{flex:1}
+</style></head><body>
+<div id="app"></div>
+<script>
+const $=s=>document.querySelector(s),app=$('#app');
+const KEY='spotfinder.spots';let spots=JSON.parse(localStorage.getItem(KEY)||'[]');
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(spots))}catch(e){alert('Storage full: export a backup and remove photos.')}};
+let here=null,heading=null,watchId=null;
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const R=6371000,rad=d=>d*Math.PI/180,deg=r=>r*180/Math.PI;
+function dist(a,b){const dl=rad(b.lat-a.lat),dn=rad(b.lon-a.lon),x=Math.sin(dl/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dn/2)**2;return 2*R*Math.asin(Math.sqrt(x))}
+function bearing(a,b){const y=Math.sin(rad(b.lon-a.lon))*Math.cos(rad(b.lat)),x=Math.cos(rad(a.lat))*Math.sin(rad(b.lat))-Math.sin(rad(a.lat))*Math.cos(rad(b.lat))*Math.cos(rad(b.lon-a.lon));return (deg(Math.atan2(y,x))+360)%360}
+const ft=m=>m*3.28084,fmt=m=>{const f=ft(m);return f<1000?Math.round(f)+' ft':(f/5280).toFixed(2)+' mi'};
+const card=b=>['N','NE','E','SE','S','SW','W','NW'][Math.round(b/45)%8];
+function startWatch(){if(watchId!=null||!navigator.geolocation)return;watchId=navigator.geolocation.watchPosition(p=>{here={lat:p.coords.latitude,lon:p.coords.longitude,acc:p.coords.accuracy};onPos&&onPos(here)},e=>{const s=$('#gps');if(s)s.textContent='GPS error: '+e.message},{enableHighAccuracy:true,maximumAge:0,timeout:30000})}
+let onPos=null;
+function compass(){const go=()=>addEventListener('deviceorientation',e=>{if(e.webkitCompassHeading!=null)heading=e.webkitCompassHeading;else if(e.absolute&&e.alpha!=null)heading=360-e.alpha;onOri&&onOri()},true);
+ if(typeof DeviceOrientationEvent!=='undefined'&&DeviceOrientationEvent.requestPermission){DeviceOrientationEvent.requestPermission().then(r=>{if(r==='granted'){go();localStorage.setItem('cmp','1');const b=$('#cmpBtn');b&&b.classList.add('hide')}else alert('Compass permission denied')}).catch(e=>alert(e))}else go()}
+let onOri=null,compassOn=false;function ensureCompass(){if(compassOn)return;if(!(typeof DeviceOrientationEvent!=='undefined'&&DeviceOrientationEvent.requestPermission)){compass();compassOn=true}}
+// ---------- LIST ----------
+function list(){onOri=null;let q='';
+ app.innerHTML=`<h1>SpotFinder</h1><div id="gps" class="muted">Getting GPS…</div>
+ <button onclick="markNew()">＋ Mark spot</button><input id="q" placeholder="Search name, MP, track, note…"><div id="L"></div>
+ <div class="row"><button class="sec" onclick="exportJSON()">Backup JSON</button><button class="sec" onclick="exportCSV()">CSV</button></div>
+ <button class="sec" onclick="$('#imp').click()">Import backup</button><input id="imp" type="file" accept=".json,application/json" class="hide">`;
+ $('#imp').onchange=importJSON;
+ const draw=()=>{const g=$('#gps');if(g&&here)g.textContent=`GPS ±${Math.round(ft(here.acc))} ft · ${spots.length} spots`;
+  let arr=spots.filter(s=>!q||[s.name,s.cat,s.mp,s.track,s.note,s.offsets].join(' ').toLowerCase().includes(q));
+  if(here)arr=arr.map(s=>({s,d:dist(here,s)})).sort((a,b)=>a.d-b.d);else arr=arr.map(s=>({s,d:null}));
+  $('#L').innerHTML=arr.map(({s,d})=>`<div class="card" onclick="find('${s.id}')"><b>${esc(s.name)}</b> <span class="muted">${esc(s.cat)}</span><br>
+  <span class="muted">${s.mp?'MP '+esc(s.mp)+' · ':''}${s.track?'Trk '+esc(s.track)+' · ':''}${d!=null?fmt(d)+' '+card(bearing(here,s)):''}</span></div>`).join('')||'<p class="muted">No spots yet.</p>'};
+ $('#q').oninput=e=>{q=e.target.value.toLowerCase();draw()};let t=0;onPos=()=>{if(Date.now()-t>3000){t=Date.now();draw()}};draw();startWatch()}
+// ---------- MARK (averaging) ----------
+function capture(cb){const pts=[];const T=15000,t0=Date.now();
+ app.insertAdjacentHTML('beforeend',`<div id="cap" class="card"><div class="big" id="capAcc">…</div><div class="muted" id="capTxt">Hold still. Averaging GPS…</div><button class="sec" id="capDone">Use now</button></div>`);
+ $('#cap').scrollIntoView();const fin=()=>{clearInterval(iv);onPos=prev;$('#cap').remove();
+  if(!pts.length){alert('No GPS fix yet');return}
+  const best=Math.min(...pts.map(p=>p.acc)),use=pts.filter(p=>p.acc<=best*2);let w=0,la=0,lo=0;use.forEach(p=>{const k=1/(p.acc*p.acc);w+=k;la+=p.lat*k;lo+=p.lon*k});
+  cb({lat:la/w,lon:lo/w,acc:Math.max(best/Math.sqrt(use.length),1),n:use.length})};
+ const prev=onPos;onPos=p=>{pts.push({...p});$('#capAcc').textContent='±'+Math.round(ft(p.acc))+' ft';$('#capTxt').textContent=`${pts.length} readings · ${Math.max(0,Math.ceil((T-(Date.now()-t0))/1000))}s left`};
+ $('#capDone').onclick=fin;const iv=setInterval(()=>{if(Date.now()-t0>=T)fin()},500);startWatch()}
+function markNew(){edit({id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),name:'',cat:'Island wire',note:'',offsets:'',mp:'',track:'',photo:null,lat:null},true)}
+function edit(s,isNew){onOri=null;const c=['Island wire','Termination','Bond','Other'];
+ app.innerHTML=`<h1>${isNew?'New spot':'Edit spot'}</h1>
+ <label>Name</label><input id="n" value="${esc(s.name)}" placeholder="e.g. Island wire MP 42.3 E rail">
+ <label>Category</label><select id="c">${c.map(x=>`<option ${x===s.cat?'selected':''}>${x}</option>`).join('')}</select>
+ <div class="row"><div><label>Milepost</label><input id="mp" value="${esc(s.mp)}" inputmode="decimal"></div><div><label>Track</label><input id="tr" value="${esc(s.track)}"></div></div>
+ <label>Reference offsets</label><textarea id="o" rows="3" placeholder="6 ft east of mast 42-2, 2 ft field side of rail">${esc(s.offsets)}</textarea>
+ <label>Note</label><textarea id="nt" rows="2">${esc(s.note)}</textarea>
+ <label>Photo</label><input id="ph" type="file" accept="image/*" capture="environment"><div id="pv">${s.photo?`<img class="ph" src="${s.photo}">`:''}</div>
+ <div class="card" id="pos">${s.lat!=null?`Position saved ±${Math.round(ft(s.acc))} ft`:'No position yet'}</div>
+ <button class="sec" id="gp">${s.lat!=null?'Re-mark position here':'Capture GPS (stand on spot)'}</button>
+ <button id="sv">Save</button>${isNew?'':'<button class="del" id="dl">Delete</button>'}<button class="sec" onclick="list()">Cancel</button>`;
+ $('#ph').onchange=e=>{const f=e.target.files[0];if(!f)return;const img=new Image();img.onload=()=>{const m=900,k=Math.min(1,m/Math.max(img.width,img.height)),cv=document.createElement('canvas');cv.width=img.width*k;cv.height=img.height*k;cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);s.photo=cv.toDataURL('image/jpeg',0.6);$('#pv').innerHTML=`<img class="ph" src="${s.photo}">`;URL.revokeObjectURL(img.src)};img.src=URL.createObjectURL(f)};
+ $('#gp').onclick=()=>capture(p=>{Object.assign(s,{lat:p.lat,lon:p.lon,acc:p.acc,time:new Date().toISOString()});$('#pos').textContent=`Position saved ±${Math.round(ft(p.acc))} ft (${p.n} readings)`});
+ $('#sv').onclick=()=>{s.name=$('#n').value.trim()||s.cat;s.cat=$('#c').value;s.mp=$('#mp').value;s.track=$('#tr').value;s.offsets=$('#o').value;s.note=$('#nt').value;
+  if(s.lat==null){alert('Capture GPS first');return}const i=spots.findIndex(x=>x.id===s.id);i<0?spots.push(s):spots[i]=s;save();find(s.id)};
+ if(!isNew)$('#dl').onclick=()=>{if(confirm('Delete '+s.name+'?')){spots=spots.filter(x=>x.id!==s.id);save();list()}};
+ if(isNew)$('#gp').click()}
+// ---------- FIND ----------
+function find(id){const s=spots.find(x=>x.id===id);if(!s)return list();ensureCompass();
+ const needBtn=typeof DeviceOrientationEvent!=='undefined'&&DeviceOrientationEvent.requestPermission&&heading==null;
+ app.innerHTML=`<button class="sec" onclick="list()">‹ All spots</button><h1>${esc(s.name)}</h1>
+ <div class="big" id="d">…</div><div style="text-align:center" id="b" class="muted"></div>
+ <svg id="arrow" viewBox="0 0 100 100"><circle cx="50" cy="50" r="48" fill="none" stroke="#444" stroke-width="3"/><path d="M50 6 L72 80 L50 64 L28 80Z" fill="#ffcc00"/></svg>
+ ${needBtn?'<button id="cmpBtn" onclick="compass()">Enable compass arrow</button>':''}
+ <div class="card" style="font-size:26px"><b>Offsets:</b><br>${esc(s.offsets)||'—'}</div>
+ ${s.photo?`<img class="ph" src="${s.photo}">`:''}
+ <div class="card">${s.cat}${s.mp?' · MP '+esc(s.mp):''}${s.track?' · Track '+esc(s.track):''}<br>${esc(s.note)}<div class="muted">Saved ±${Math.round(ft(s.acc))} ft · ${s.time?new Date(s.time).toLocaleString():''}<br>${s.lat.toFixed(6)}, ${s.lon.toFixed(6)}</div></div>
+ <a class="btn" style="text-align:center;line-height:64px;text-decoration:none" href="https://maps.apple.com/?daddr=${s.lat},${s.lon}&q=${encodeURIComponent(s.name)}">Open in Apple Maps</a>
+ <button class="sec" id="ed">Edit / re-mark</button>`;
+ $('#ed').onclick=()=>edit({...s},false);
+ const upd=()=>{if(!here)return;const d=dist(here,s),b=bearing(here,s);$('#d').textContent=fmt(d);
+  $('#b').textContent=`Bearing ${Math.round(b)}° ${card(b)} · your GPS ±${Math.round(ft(here.acc))} ft`+(d<here.acc?' · within GPS error: use offsets':'');
+  $('#arrow').style.transform=`rotate(${heading!=null?b-heading:b}deg)`};onPos=upd;onOri=upd;startWatch();upd()}
+// ---------- BACKUP ----------
+function dl(name,data,type){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([data],{type}));a.download=name;a.click()}
+function exportJSON(){dl('spotfinder-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(spots),'application/json')}
+function exportCSV(){const h=['name','cat','mp','track','lat','lon','acc_ft','time','offsets','note'],q=v=>'"'+String(v??'').replace(/"/g,'""')+'"';
+ dl('spotfinder.csv',[h.join(','),...spots.map(s=>[s.name,s.cat,s.mp,s.track,s.lat,s.lon,Math.round(ft(s.acc)),s.time,s.offsets,s.note].map(q).join(','))].join('\n'),'text/csv')}
+function importJSON(e){const f=e.target.files[0];if(!f)return;f.text().then(t=>{const a=JSON.parse(t);if(!Array.isArray(a))throw 0;let n=0;a.forEach(s=>{if(s.id&&s.lat!=null){const i=spots.findIndex(x=>x.id===s.id);i<0?spots.push(s):spots[i]=s;n++}});save();alert('Imported '+n);list()}).catch(()=>alert('Not a valid backup'))}
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
+list();
+</script></body></html>
